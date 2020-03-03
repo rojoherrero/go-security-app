@@ -18,7 +18,7 @@ var logger *zap.Logger
 var oauth2Config oauth2.Config
 var provider *oidc.Provider
 var verifier *oidc.IDTokenVerifier
-var state string = "onestate"
+var state string
 
 func init() {
 
@@ -27,18 +27,19 @@ func init() {
 
 	var e error
 
+	// I know that all of these constant must be on a config file
+	// FIXME
 	configURL := "http://localhost:8080/auth/realms/develop"
+	state = "onestate"
+	clientID := "web"
+	clientSecret := "781cda7d-28af-4a3a-a8e5-2cc30905b8db"
+	redirectURL := "http://localhost:8181/auth/callback"
 
 	provider, e = oidc.NewProvider(context.Background(), configURL)
 
 	if e != nil {
 		logger.Panic("OIDC Provider not ready", zap.String("error", e.Error()))
 	}
-
-	clientID := "web"
-	clientSecret := "781cda7d-28af-4a3a-a8e5-2cc30905b8db"
-
-	redirectURL := "http://localhost:8181/auth/callback"
 
 	oauth2Config = oauth2.Config{
 		ClientID:     clientID,
@@ -74,6 +75,7 @@ func main() {
 	router.Run(":8181")
 }
 
+// AccessHandler expose all the methods for handling keycloak communications
 type AccessHandler interface {
 	WebLogin(c *gin.Context)
 	Callback(c *gin.Context)
@@ -85,6 +87,7 @@ type accessHandler struct {
 	oauth2Config oauth2.Config
 }
 
+// NewAccessHandler generates a new instance of accessHandler
 func NewAccessHandler(logger *zap.Logger, oauth2Config oauth2.Config) AccessHandler {
 	return &accessHandler{logger: logger, oauth2Config: oauth2Config}
 }
