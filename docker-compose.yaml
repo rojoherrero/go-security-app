@@ -1,0 +1,14 @@
+version: 3
+services:
+    app:
+        build: .
+        environment:
+            - KEYCLOAK_CLIENT_ID=web-app
+            - KEYCLOAK_CLIENT_SECRET=super_secret
+            - KEYCLOAK_REALM=web
+            - KEYCLOAK_URL=localhost:8000
+            - MARIADB_URL=root:root@mariadb:3306/access?parseTime=true
+        ports:
+            - "8080:8080"
+        volumes:
+            - 
