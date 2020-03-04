@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -14,34 +15,42 @@ import (
 	"golang.org/x/oauth2"
 )
 
-var logger *zap.Logger
-var oauth2Config oauth2.Config
-var provider *oidc.Provider
-var verifier *oidc.IDTokenVerifier
-var state string
+func main() {
 
-func init() {
-
-	logger, _ = zap.NewDevelopment()
+	logger, _ := zap.NewDevelopment()
 	defer logger.Sync()
 
-	var e error
+	router := gin.Default()
+	router.Use(ginzap.Ginzap(logger, time.RFC3339, true))
+	router.Use(ginzap.RecoveryWithZap(logger, true))
 
-	// I know that all of these constant must be on a config file
-	// FIXME
-	configURL := "http://localhost:8080/auth/realms/develop"
-	state = "onestate"
-	clientID := "web"
-	clientSecret := "781cda7d-28af-4a3a-a8e5-2cc30905b8db"
-	redirectURL := "http://localhost:8181/auth/callback"
+	oauth2Config, verifier := newOAuthConfig(logger)
 
-	provider, e = oidc.NewProvider(context.Background(), configURL)
+	accessHandler := NewAccessHandler(logger, oauth2Config, verifier, os.Getenv("CALLBACK_STATUS_STRING"))
+
+	authRouter := router.Group("/auth")
+	{
+		authRouter.GET("/login/web", accessHandler.WebLogin)
+		authRouter.GET("/callback", accessHandler.Callback)
+
+	}
+	port := ":" + os.Getenv("SECURITY_APP_PORT")
+	router.Run(port)
+}
+
+func newOAuthConfig(logger *zap.Logger) (oauth2.Config, *oidc.IDTokenVerifier) {
+	configURL := os.Getenv("KEYCLOAK_URL")
+	clientID := os.Getenv("KEYCLOAK_CLIENTID")
+	clientSecret := os.Getenv("KEYCLOAK_CLIENT_SECRET")
+	redirectURL := os.Getenv("SECURITY_APP_HOST") + ":" + os.Getenv("SECURITY_APP_PORT") + "/auth/callback"
+
+	provider, e := oidc.NewProvider(context.Background(), configURL)
 
 	if e != nil {
 		logger.Panic("OIDC Provider not ready", zap.String("error", e.Error()))
 	}
 
-	oauth2Config = oauth2.Config{
+	oauth2Config := oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		RedirectURL:  redirectURL,
@@ -53,26 +62,9 @@ func init() {
 		ClientID: clientID,
 	}
 
-	verifier = provider.Verifier(oidcConfig)
+	verifier := provider.Verifier(oidcConfig)
 
-}
-
-func main() {
-
-	router := gin.Default()
-	router.Use(ginzap.Ginzap(logger, time.RFC3339, true))
-	router.Use(ginzap.RecoveryWithZap(logger, true))
-
-	accessHandler := NewAccessHandler(logger, oauth2Config)
-
-	authRouter := router.Group("/auth")
-	{
-		authRouter.GET("/login/web", accessHandler.WebLogin)
-		authRouter.GET("/callback", accessHandler.Callback)
-
-	}
-
-	router.Run(":8181")
+	return oauth2Config, verifier
 }
 
 // AccessHandler expose all the methods for handling keycloak communications
@@ -85,18 +77,25 @@ type AccessHandler interface {
 type accessHandler struct {
 	logger       *zap.Logger
 	oauth2Config oauth2.Config
+	state        string
+	verifier     *oidc.IDTokenVerifier
 }
 
 // NewAccessHandler generates a new instance of accessHandler
-func NewAccessHandler(logger *zap.Logger, oauth2Config oauth2.Config) AccessHandler {
-	return &accessHandler{logger: logger, oauth2Config: oauth2Config}
+func NewAccessHandler(logger *zap.Logger, oauth2Config oauth2.Config, verifier *oidc.IDTokenVerifier, state string) AccessHandler {
+	return &accessHandler{
+		logger:       logger,
+		oauth2Config: oauth2Config,
+		state:        state,
+		verifier:     verifier,
+	}
 }
 
 func (h *accessHandler) WebLogin(c *gin.Context) {
 	rawAccessToken := c.GetHeader("Authorization")
 
 	if rawAccessToken == "" {
-		c.Redirect(http.StatusFound, oauth2Config.AuthCodeURL(state))
+		c.Redirect(http.StatusFound, h.oauth2Config.AuthCodeURL(h.state))
 		return
 	}
 
@@ -105,16 +104,16 @@ func (h *accessHandler) WebLogin(c *gin.Context) {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
-	_, err := verifier.Verify(context.Background(), parts[1])
+	_, err := h.verifier.Verify(context.Background(), parts[1])
 
 	if err != nil {
-		c.Redirect(http.StatusFound, oauth2Config.AuthCodeURL(state))
+		c.Redirect(http.StatusFound, h.oauth2Config.AuthCodeURL(h.state))
 		return
 	}
 }
 
 func (h *accessHandler) Callback(c *gin.Context) {
-	if c.Query("state") != state {
+	if c.Query("state") != h.state {
 		c.AbortWithStatusJSON(http.StatusBadRequest, map[string]string{"Error": "state did not match"})
 		return
 	}
@@ -129,7 +128,7 @@ func (h *accessHandler) Callback(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, map[string]string{"Error": "No id_token field in oauth2 token."})
 		return
 	}
-	idToken, err := verifier.Verify(context.Background(), rawIDToken)
+	idToken, err := h.verifier.Verify(context.Background(), rawIDToken)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, map[string]string{"Error": "Failed to verify ID Token"})
 		return
