@@ -85,15 +85,15 @@ type AccessHandler interface {
 type accessHandler struct {
 	logger       *zap.Logger
 	oauth2Config oauth2.Config
-	state        string
 	verifier     *oidc.IDTokenVerifier
+	state        string
 	clientID     string
 	keycloakURL  string
 }
 
 // NewAccessHandler generates a new instance of accessHandler
-func NewAccessHandler(logger *zap.Logger, oauth2Config oauth2.Config, verifier *oidc.IDTokenVerifier, state string,
-	clientID string, keycloakURL string) AccessHandler {
+func NewAccessHandler(logger *zap.Logger, oauth2Config oauth2.Config, verifier *oidc.IDTokenVerifier,
+	state string, clientID string, keycloakURL string) AccessHandler {
 
 	return &accessHandler{
 		logger:       logger,
@@ -128,23 +128,26 @@ func (h *accessHandler) WebLogin(c *gin.Context) {
 
 func (h *accessHandler) Callback(c *gin.Context) {
 	if c.Query("state") != h.state {
-		c.AbortWithStatusJSON(http.StatusBadRequest, map[string]string{"Error": "state did not match"})
+		h.logger.Warn("state did not match")
+		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 
 	oauth2Token, e := h.oauth2Config.Exchange(context.Background(), c.Query("code"))
 	if e != nil {
-		c.AbortWithError(http.StatusInternalServerError, e)
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 	rawIDToken, ok := oauth2Token.Extra("id_token").(string)
 	if !ok {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, map[string]string{"Error": "No id_token field in oauth2 token."})
+		h.logger.Warn("No id_token field in oauth2 token.")
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 	idToken, err := h.verifier.Verify(context.Background(), rawIDToken)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, map[string]string{"Error": "Failed to verify ID Token"})
+		h.logger.Warn("Failed to verify ID Token")
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
@@ -170,6 +173,7 @@ func (h *accessHandler) Callback(c *gin.Context) {
 	c.JSON(http.StatusOK, oauth2Token)
 }
 
+// LogoutRequest models log out request
 type LogoutRequest struct {
 	AccessToken  string `json:"access_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
@@ -185,6 +189,8 @@ func (h *accessHandler) Logout(c *gin.Context) {
 	var logoutReq LogoutRequest
 	if e := c.BindJSON(&logoutReq); e != nil {
 		h.logger.Fatal("Couldn't unmarshall request")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
 	}
 
 	req, e := h.createLogoutRequest(logoutReq)
@@ -210,11 +216,11 @@ func (h *accessHandler) Logout(c *gin.Context) {
 	c.JSON(http.StatusOK, appRes)
 }
 
-func (h *accessHandler) createLogoutRequest(logoutReq LogoutRequest) (*http.Request, error) {
+func (h *accessHandler) createLogoutRequest(input LogoutRequest) (*http.Request, error) {
 
 	data := url.Values{}
 	data.Set("client_id", h.clientID)
-	data.Set("refresh_token", logoutReq.RefreshToken)
+	data.Set("refresh_token", input.RefreshToken)
 
 	req, e := http.NewRequest(
 		"POST",
@@ -227,7 +233,7 @@ func (h *accessHandler) createLogoutRequest(logoutReq LogoutRequest) (*http.Requ
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Authorization", "Bearer "+logoutReq.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+input.AccessToken)
 
 	return req, nil
 }
